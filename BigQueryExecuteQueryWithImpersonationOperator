@@ -1,0 +1,52 @@
+from airflow.providers.google.cloud.operators.bigquery import BigQueryExecuteQueryOperator
+from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
+from airflow.utils.decorators import apply_defaults
+from google.auth.transport.requests import Request
+from google.auth import impersonated_credentials
+import logging
+
+class BigQueryExecuteQueryWithImpersonationOperator(BigQueryExecuteQueryOperator):
+    """
+    Custom operator to execute BigQuery queries with impersonation chain for specific service accounts.
+    It extends the standard BigQueryExecuteQueryOperator by adding impersonation support.
+
+    :param impersonation_chain: The list of service accounts to impersonate in the chain.
+    :type impersonation_chain: list[str]
+    """
+
+    @apply_defaults
+    def __init__(
+        self,
+        impersonation_chain=None,
+        *args, 
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.impersonation_chain = impersonation_chain
+
+    def execute(self, context):
+        # If an impersonation chain is provided, use it to impersonate the service account
+        if self.impersonation_chain:
+            # Use the BigQueryHook to impersonate the service account
+            hook = BigQueryHook(
+                gcp_conn_id=self.gcp_conn_id,
+                impersonation_chain=self.impersonation_chain,
+                delegate_to=self.delegate_to,
+            )
+            # Use the impersonated credentials to execute the query
+            credentials = hook._get_credentials()
+            # Set up the BigQuery client with the impersonated credentials
+            client = hook.get_client(credentials=credentials)
+            logging.info("Executing query with impersonation chain: %s", self.impersonation_chain)
+        else:
+            # If no impersonation chain is provided, execute the query normally
+            client = self._get_client()
+
+        # Run the query
+        query_job = client.query(self.sql)
+        query_job.result()  # Wait for the query to finish
+
+        logging.info("Query executed successfully.")
+
+        # Return the result (optional)
+        return query_job
