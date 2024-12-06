@@ -1,0 +1,63 @@
+from airflow import DAG
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.utils.dates import days_ago
+from datetime import timedelta
+
+# Default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=10),
+}
+
+# Define the DAG
+with DAG(
+    dag_id='bigquery_insert_job_operator_v2',
+    default_args=default_args,
+    description='Another example using BigQueryInsertJobOperator',
+    schedule_interval=None,  # Manual or set a specific schedule
+    start_date=days_ago(1),
+    catchup=False,
+    tags=['example', 'bigquery'],
+) as dag:
+
+    # Query to be executed
+    source_table = "`your_project.your_dataset.source_table`"
+    destination_table = "`your_project.your_dataset.destination_table`"
+    query = f"""
+    SELECT 
+        column1,
+        column2,
+        COUNT(*) AS row_count
+    FROM {source_table}
+    WHERE column1 IS NOT NULL
+    GROUP BY column1, column2
+    """
+
+    # BigQuery job configuration for running the query
+    bigquery_query_job = {
+        "configuration": {
+            "query": {
+                "query": query,
+                "useLegacySql": False,
+                "writeDisposition": "WRITE_TRUNCATE",
+                "destinationTable": {
+                    "projectId": "your_project",
+                    "datasetId": "your_dataset",
+                    "tableId": "destination_table",
+                },
+            }
+        }
+    }
+
+    # BigQuery task
+    execute_bigquery_job = BigQueryInsertJobOperator(
+        task_id='execute_query',
+        configuration=bigquery_query_job,
+        location='US',  # Specify region
+    )
+
+    execute_bigquery_job
