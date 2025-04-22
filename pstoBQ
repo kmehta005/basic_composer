@@ -1,0 +1,72 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+from google.cloud import pubsub_v1, bigquery
+import json
+from datetime import datetime
+
+PROJECT_ID = 'your-gcp-project-id'
+SUBSCRIPTION_NAME = 'error-logs-sub'
+BQ_DATASET = 'error_logs'
+BQ_TABLE = 'errors'
+
+def pull_and_store_errors(**kwargs):
+    subscriber = pubsub_v1.SubscriberClient()
+    subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_NAME)
+
+    bq_client = bigquery.Client()
+    table_id = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
+
+    response = subscriber.pull(
+        request={"subscription": subscription_path, "max_messages": 10},
+        timeout=30,
+    )
+
+    rows_to_insert = []
+
+    for received_message in response.received_messages:
+        try:
+            message_data = json.loads(received_message.message.data.decode('utf-8'))
+            row = {
+                "error_code": message_data.get("error_code"),
+                "message": message_data.get("message"),
+                "source": message_data.get("source", "unknown"),
+                "timestamp": message_data.get("timestamp", datetime.utcnow().isoformat())
+            }
+            rows_to_insert.append(row)
+
+            # Acknowledge the message
+            subscriber.acknowledge(
+                request={
+                    "subscription": subscription_path,
+                    "ack_ids": [received_message.ack_id],
+                }
+            )
+        except Exception as e:
+            print(f"Error processing message: {e}")
+
+    if rows_to_insert:
+        errors = bq_client.insert_rows_json(table_id, rows_to_insert)
+        if errors:
+            raise RuntimeError(f"BigQuery insert errors: {errors}")
+        else:
+            print(f"Inserted {len(rows_to_insert)} rows into BigQuery.")
+
+default_args = {
+    'owner': 'airflow',
+    'retries': 1,
+}
+
+with DAG(
+    dag_id='pubsub_to_bigquery_error_logs',
+    default_args=default_args,
+    schedule_interval='*/15 * * * *',  # every 15 minutes
+    start_date=days_ago(1),
+    catchup=False,
+) as dag:
+
+    process_errors = PythonOperator(
+        task_id='pull_pubsub_and_push_bq',
+        python_callable=pull_and_store_errors,
+        provide_context=True
+    )
